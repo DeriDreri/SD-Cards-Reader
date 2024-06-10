@@ -7,8 +7,10 @@ entity spi_controler is
     Port ( -- Control Interface
 			  TX_BGN : in  STD_LOGIC;
            CMD_IN : in  STD_LOGIC_VECTOR (47 downto 0);
-           R_OUT : out  STD_LOGIC_VECTOR (7 downto 0);
-           R_READY : out  STD_LOGIC := '0';
+           DATA_OUT : out  STD_LOGIC_VECTOR (7 downto 0);
+			  RESPONSE_READY : out STD_LOGIC := '0';
+           DATA_READY : out  STD_LOGIC := '0';
+			  DATA_OVER : out STD_LOGIC := '1';
 			  
 			  -- CLK
            CLK : in  STD_LOGIC;
@@ -23,35 +25,48 @@ end spi_controler;
 architecture Behavioral of spi_controler is
 
 -- State machine
-type state_type is (AWAIT, TRANSMIT, AWAIT_RESPONSE, READ_RESPONSE);
-signal state : state_type := AWAIT;
+type state_type is (INIT, AWAIT, TRANSMIT, AWAIT_RESPONSE, READ_RESPONSE, AWAIT_DATA, READ_DATA);
+signal state : state_type := INIT;
 
 -- Internal signal dummies
 signal counter : STD_LOGIC_VECTOR(7 downto 0) := x"00";
 signal signal_sck : std_logic := '0';
 
 -- Counter for transmission 
+signal counter_init : UNSIGNED(6 downto 0) := "1111111";
 signal counter_tx : UNSIGNED(5 downto 0) := "000000";
 signal counter_rx : UNSIGNED(2 downto 0) := "111";
+signal counter_data : UNSIGNED(9 downto 0) := "1000000000";
 
 -- Data buffors
-signal response_buffor : std_logic_vector(7 downto 0) := x"dd";
+signal data_buffor : std_logic_vector(7 downto 0) := x"ff";
 
 begin
 
--- State machine (TODO)
+-- State machine
 process(signal_sck)
 begin
 	if (falling_edge(signal_sck)) then
 		case state is	
+			when INIT => 
+				RESPONSE_READY <= '0';
+				if (counter_init = "0000000") then
+					state <= AWAIT;
+				else 
+					counter_init <= counter_init - 1;
+				end if;
 			when AWAIT =>
+				DATA_OVER <= '1';
 				if (TX_BGN = '1') then 
 					counter_tx <= "101111";
 					state <= TRANSMIT;
-					R_READY <= '0';
+					DATA_READY <= '0';
+					RESPONSE_READY <= '0';
+					DATA_OVER <= '0';
 					CS <= '0';
 				end if;
 			when TRANSMIT =>
+				DATA_OVER <= '0';
 				if (counter_tx = "00000") then
 					state <= AWAIT_RESPONSE;
 				else 
@@ -59,20 +74,45 @@ begin
 				end if;
 			when AWAIT_RESPONSE => 
 				if (MISO = '0') then 
-					response_buffor <= response_buffor(6 downto 0) & MISO;
+					data_buffor <= data_buffor(6 downto 0) & MISO;
 					state <= READ_RESPONSE;
 					counter_rx <= counter_rx-1;
 				end if;
 			when READ_RESPONSE => 
-				response_buffor <= response_buffor(6 downto 0) & MISO;
+				data_buffor <= data_buffor(6 downto 0) & MISO;
 				if (counter_rx = "000") then
 					counter_rx <= "111";
-					R_READY <= '1';
-					state <= AWAIT;
-					CS <= '1';
+					RESPONSE_READY <= '1';
+					if (CMD_IN(45 downto 40) = "010001") then
+						state <= AWAIT_DATA;
+					else
+						state <= AWAIT;
+						CS <= '1';
+					end if;
 				else 
 					counter_rx <= counter_rx-1;
 				end if;
+			when AWAIT_DATA =>
+				if (MISO = '0') then
+					state <= READ_DATA;
+				end if;
+			when READ_DATA =>
+				DATA_READY <= '0';
+				data_buffor <= data_buffor(6 downto 0) & MISO;
+				if (counter_rx = "000") then
+					counter_rx <= "111";
+					DATA_READY <= '1';
+					if (counter_data = "0000000001") then
+						counter_data <= "1000000000";
+						state <= AWAIT;
+						CS <= '1';
+					else
+						counter_data <= counter_data - 1;
+					end if;
+				else 
+					counter_rx <= counter_rx-1;
+				end if;
+				
 			end case;
 	end if;
 end process;
@@ -91,8 +131,8 @@ begin
 end process;
 
 
+DATA_OUT <= data_buffor;
 SCK <= signal_sck;
-R_OUT <= response_buffor;
 MOSI <= CMD_IN(to_integer(counter_tx));
 
 end Behavioral;
